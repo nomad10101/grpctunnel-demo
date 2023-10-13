@@ -8,7 +8,7 @@ Steps:
 - Run `network_server` in terminal 1
 - Run `network_client` in terminal 2
 - To initiate data transfer, signal `network_server` with SIGHUP like so: `pkill -SIGHUP network_server`
-- The files will be saved as: `dst_data_at_0.bin` `dst_data_at_1.bin` ...
+- The transfered files will be saved as: `dst_data_at_0.bin` `dst_data_at_1.bin` ...
 
 To reproduce:
 - Initiate two file transfers by issuing `SIGHUP` to `network_server` twice

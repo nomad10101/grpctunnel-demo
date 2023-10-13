@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+option go_package = "github.com/nomad10101/grpctunnel-demo";
+
+
+service EndpointService {
+  rpc DataPipe(stream HubMessage) returns (stream EndpointMessage) {}
+}
+
+message EndpointMessage {
+      bytes data_chunk = 2;
+}
+
+message HubMessage {
+      bytes data_chunk = 4;
+}
+

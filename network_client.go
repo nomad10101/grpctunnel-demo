@@ -65,6 +65,7 @@ func (this *EndpointService) DataPipe(
 }
 
 func main() {
+	log.Println("Starting network client")
 	// Dial the server.
 	cc, err := grpc.Dial(
 		"127.0.0.1:7899",

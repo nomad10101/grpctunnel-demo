@@ -58,6 +58,8 @@ func (this *Hub) uplaodFile(filename string) {
 }
 
 func main() {
+	log.Println("Starting network server")
+
 	handler := grpctunnel.NewTunnelServiceHandler(
 		grpctunnel.TunnelServiceHandlerOptions{},
 	)

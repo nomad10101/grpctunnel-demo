@@ -11,6 +11,7 @@ require (
 require (
 	github.com/fullstorydev/grpchan v1.1.1 // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
+	github.com/mitchellh/go-grpc-net-conn v0.0.0-20200427190222-eb030e4876f0 // indirect
 	golang.org/x/net v0.7.0 // indirect
 	golang.org/x/sys v0.5.0 // indirect
 	golang.org/x/text v0.7.0 // indirect

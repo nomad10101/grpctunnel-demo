@@ -1,95 +1,160 @@
 package main
 
 import (
-	"bufio"
 	"context"
-	"errors"
+	"fmt"
+	"github.com/golang/protobuf/proto"
 	"github.com/jhump/grpctunnel"
 	"github.com/jhump/grpctunnel/tunnelpb"
+	grpc_net_conn "github.com/mitchellh/go-grpc-net-conn"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/emptypb"
 	grpctunnel_demo "grpctunnel-test/gen_pb"
+	"grpctunnel-test/utils"
 	"io"
 	"log"
 	"net"
-	"os"
-	"os/signal"
-	syscall "syscall"
 )
 
 type Hub struct {
 	client grpctunnel_demo.EndpointServiceClient
 }
 
-func (this *Hub) uplaodFile(filename string) {
-	log.Println("Begin Tx: ", filename)
+func (this *Hub) CreateTcpListenerAndBlock(
+	context context.Context,
+	// request *grpctunnel_demo.TcpListenRequest,
+) (*emptypb.Empty, error) {
+	log.Println("START LISTEN")
 
-	fi, err := os.Open(filename)
-	if err != nil {
-		panic(err)
-	}
+	listener, err := utils.TcpListen("localhost", "50071") //(request.GetHost(), request.GetPort())
+	if err == nil {
+		// close listener on exit
+		defer listener.Close()
 
-	defer fi.Close()
+		go this.tcpAcceptAndServe(listener)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		exitLoop := false
 
-	stream, err := this.client.DataPipe(ctx)
-	if err != nil {
-		log.Println("Fail Tx: ", err)
-		return
-	}
-
-	// make a read buffer
-	reader := bufio.NewReader(fi)
-
-	buf := make([]byte, 16384)
-
-	for {
-		// read a chunk
-		n, err := reader.Read(buf)
-		if err != nil && err != io.EOF {
-			panic(err)
-		}
-
-		err = stream.Send(&grpctunnel_demo.HubMessage{
-			DataChunk: buf[:n],
-		})
-		if err != nil {
-			log.Println("Fail Tx: ", err)
-			return
-		}
-
-		if n == 0 {
-			break
-		}
-	}
-
-	err = stream.CloseSend()
-	if err != nil {
-		log.Println("Fail Tx: ", err)
-		return
-	}
-
-	// Now we must exhaust the stream for RPC to complete
-	// TODO: if it is possible for server to send messages *while*
-	//       we are uploading above, then must be done in another goroutine
-	//       to avoid any chances of deadlock -- like where the server is
-	//       trying to send a message and waiting on the client to receive
-	//       it before it accepts another upload chunk.
-	for {
-		_, err = stream.Recv()
-		if errors.Is(err, io.EOF) {
-			break // done
-		}
-		if err != nil {
-			if err != nil {
-				log.Println("Fail Tx: ", err)
-				return
+		for !exitLoop {
+			select {
+			case <-context.Done():
+				log.Println("Tcp Listener exit")
+				exitLoop = true
 			}
 		}
+	} else {
+		log.Println("Listen failed. Error: ", err)
 	}
 
-	log.Println("Done Tx: ", filename)
+	log.Println("END LISTEN")
+
+	return &emptypb.Empty{}, nil
+}
+
+func (this *Hub) tcpAcceptAndServe(
+	listener net.Listener,
+) {
+	var index = 0
+	exitLoop := false
+
+	for !exitLoop {
+		conn, err := listener.Accept()
+
+		index++
+		log.Println("Accepted: ", index, conn)
+
+		if err == nil {
+			stream, _ := this.client.DataPipe(context.Background())
+
+			//_, cancelFunc := context.WithCancel(stream.Context())
+
+			///
+			// We need to create a callback so the conn knows how to decode/encode
+			// arbitrary byte slices for our proto type.
+			fieldOutgoingFunc := func(msg proto.Message) *[]byte {
+				//return &msg.(*protocol.Bytes).Data
+				return &msg.(*grpctunnel_demo.HubMessage).DataChunk
+			}
+
+			fieldIncomingFunc := func(msg proto.Message) *[]byte {
+				//return &msg.(*protocol.Bytes).Data
+				return &msg.(*grpctunnel_demo.EndpointMessage).DataChunk
+			}
+
+			// Wrap our conn around the response.
+			remote := &grpc_net_conn.Conn{
+				Stream:   stream,
+				Request:  &grpctunnel_demo.HubMessage{},
+				Response: &grpctunnel_demo.EndpointMessage{},
+				Encode:   grpc_net_conn.SimpleEncoder(fieldOutgoingFunc),
+				Decode:   grpc_net_conn.SimpleDecoder(fieldIncomingFunc),
+			}
+
+			//println(fieldOutgoingFunc)
+
+			///
+
+			/*
+				if err == nil {
+					stream.Send(&protocol.HubMessage{
+						MessagePayload: &protocol.HubMessage_TcpConnectRequest{},
+					})
+
+					go handleStream(conn, stream, cancelFunc, index)
+				} else {
+					log.Println("GRPC stream init failed. Error: ", err)
+					exitLoop = true
+				}
+			*/
+
+			go handleCommPipe(conn, remote)
+		} else {
+			log.Println("Tcp Accept failed. Error: ", err)
+			exitLoop = true
+		}
+	}
+
+	log.Println("Exiting listen")
+}
+
+func handleCommPipe(
+	local net.Conn,
+	remote net.Conn,
+) {
+	defer local.Close()
+	chDone := make(chan bool)
+
+	// TODO: Figure out the frequency - size or time
+	//localProgressConn := local   //NewProgressConn(local, chRxCount)
+	//remoteProgressConn := remote //NewProgressConn(remote, chTxCount)
+
+	// Start remote -> local data transfer
+	go func() {
+		remoteToLocalTx, err := io.Copy(local, remote)
+		if err != nil {
+			log.Println(fmt.Sprintf("error while copy remote->local: %s", err))
+		}
+
+		fmt.Printf("Data remote -> local: %d \n", int64(remoteToLocalTx/(1024)))
+
+		chDone <- true
+	}()
+
+	// Start local -> remote data transfer
+	go func() {
+		localToRemoteTx, err := io.Copy(remote, local)
+		if err != nil {
+			log.Println(fmt.Sprintf("error while copy local->remote: %s", err))
+		}
+
+		fmt.Printf("Data local -> remote: %d \n", int64(localToRemoteTx/(1024)))
+
+		//fmt.Printf("-> %d\n", localProgressConn.count/(1024*1024))
+
+		chDone <- true
+	}()
+
+	<-chDone
 }
 
 func main() {
@@ -106,24 +171,7 @@ func main() {
 		client: grpctunnel_demo.NewEndpointServiceClient(handler.AsChannel()),
 	}
 
-	// Just for testing. To init file transfer send SIGHUP to this process.
-	//  On macos: pkill -SIGHUP <process-name>
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGHUP)
-
-	go func() {
-		for {
-			s := <-c
-			switch s {
-			case syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGINT:
-				return
-			case syscall.SIGHUP:
-				go hub.uplaodFile("./src_data.bin")
-			default:
-				return
-			}
-		}
-	}()
+	go hub.CreateTcpListenerAndBlock(context.Background())
 
 	// Start the gRPC server.
 	listener, err := net.Listen("tcp", "0.0.0.0:7899")

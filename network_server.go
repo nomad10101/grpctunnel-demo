@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"github.com/jhump/grpctunnel"
 	"github.com/jhump/grpctunnel/tunnelpb"
 	"google.golang.org/grpc"
@@ -29,7 +30,14 @@ func (this *Hub) uplaodFile(filename string) {
 
 	defer fi.Close()
 
-	stream, err := this.client.DataPipe(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stream, err := this.client.DataPipe(ctx)
+	if err != nil {
+		log.Println("Fail Tx: ", err)
+		return
+	}
 
 	// make a read buffer
 	reader := bufio.NewReader(fi)
@@ -43,16 +51,43 @@ func (this *Hub) uplaodFile(filename string) {
 			panic(err)
 		}
 
-		stream.Send(&grpctunnel_demo.HubMessage{
+		err = stream.Send(&grpctunnel_demo.HubMessage{
 			DataChunk: buf[:n],
 		})
+		if err != nil {
+			log.Println("Fail Tx: ", err)
+			return
+		}
 
 		if n == 0 {
 			break
 		}
 	}
 
-	stream.CloseSend()
+	err = stream.CloseSend()
+	if err != nil {
+		log.Println("Fail Tx: ", err)
+		return
+	}
+
+	// Now we must exhaust the stream for RPC to complete
+	// TODO: if it is possible for server to send messages *while*
+	//       we are uploading above, then must be done in another goroutine
+	//       to avoid any chances of deadlock -- like where the server is
+	//       trying to send a message and waiting on the client to receive
+	//       it before it accepts another upload chunk.
+	for {
+		_, err = stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break // done
+		}
+		if err != nil {
+			if err != nil {
+				log.Println("Fail Tx: ", err)
+				return
+			}
+		}
+	}
 
 	log.Println("Done Tx: ", filename)
 }

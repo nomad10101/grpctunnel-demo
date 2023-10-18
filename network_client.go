@@ -12,20 +12,20 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"sync/atomic"
 )
 
 type EndpointService struct {
 	grpctunnel_demo.UnimplementedEndpointServiceServer
 }
 
-var request_count = 0
+var request_count = int32(0)
 
 func (this *EndpointService) DataPipe(
 	stream grpctunnel_demo.EndpointService_DataPipeServer,
 ) error {
-	filename := "dst_data_at_" + strconv.Itoa(request_count) + ".bin"
-
-	request_count++
+	current_count := atomic.AddInt32(&request_count, 1)
+	filename := "dst_data_at_" + strconv.Itoa(int(current_count)) + ".bin"
 
 	log.Println("Begin Rx: ", filename)
 

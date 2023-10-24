@@ -1,17 +1,35 @@
 syntax = "proto3";
 
+import "google/protobuf/empty.proto";
 option go_package = "github.com/nomad10101/grpctunnel-demo";
 
+
+service HubService {
+  rpc CreateTcpListenerAndBlock(TcpListenRequest) returns (google.protobuf.Empty) {} // And block
+}
 
 service EndpointService {
   rpc DataPipe(stream HubMessage) returns (stream EndpointMessage) {}
 }
 
 message EndpointMessage {
-      bytes data_chunk = 2;
+  HubEvent hub_event  = 1;
+  bytes data_chunk = 2;
 }
 
 message HubMessage {
-      bytes data_chunk = 4;
+  HubEvent hub_event  = 1;
+  bytes data_chunk = 2;
 }
 
+message TcpListenRequest {
+  string tunnel_id = 1;
+  string host = 2;
+  string port = 3;
+}
+
+enum HubEvent {
+  CLIENT_CONTROL_UNSPECIFIED = 0;
+  CLIENT_CONTROL_SUBSCRIBE = 1;
+  CLIENT_CONTROL_UNSUBSCRIBE = 2;
+}

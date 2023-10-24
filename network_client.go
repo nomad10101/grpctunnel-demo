@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bufio"
 	"context"
-	"fmt"
 	"github.com/golang/protobuf/proto"
 	"github.com/jhump/grpctunnel"
 	"github.com/jhump/grpctunnel/tunnelpb"
@@ -12,12 +10,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	grpctunnel_demo "grpctunnel-test/gen_pb"
 	"grpctunnel-test/utils"
-	"io"
 	"log"
-	"net"
-	"os"
-	"strconv"
-	"sync/atomic"
+	"time"
 )
 
 type Endpoint struct {
@@ -29,14 +23,12 @@ var request_count = int32(0)
 func (this *Endpoint) DataPipe(
 	stream grpctunnel_demo.EndpointService_DataPipeServer,
 ) error {
+	fin := make(chan bool)
 
 	//ctx, cancel := context.WithCancel(stream.Context())
 	ctx, _ := context.WithCancel(stream.Context())
 
-	//go this.handleIncomingStream(stream, cancel)
-
 	fieldIncomingFunc := func(msg proto.Message) *[]byte {
-		//return &msg.(*protocol.Bytes).Data
 		return &msg.(*grpctunnel_demo.HubMessage).DataChunk
 	}
 
@@ -56,7 +48,7 @@ func (this *Endpoint) DataPipe(
 
 	remote := utils.TcpConnect("localhost", "22")
 
-	go handleCommPipe(local, remote)
+	go utils.HandleCommPipe(local, remote)
 
 	for {
 		// exit if context is done
@@ -66,94 +58,13 @@ func (this *Endpoint) DataPipe(
 			//log.Println("Stream is cancelled!")
 			log.Println("DataPipe stream exited")
 			return ctx.Err()
+		case <-fin:
+			break
 		default:
+			time.Sleep(1 * time.Millisecond)
 			break
 		}
 	}
-
-}
-
-func handleCommPipe(
-	local net.Conn,
-	remote net.Conn,
-) {
-	defer local.Close()
-	chDone := make(chan bool)
-
-	// TODO: Figure out the frequency - size or time
-	//localProgressConn := local   //NewProgressConn(local, chRxCount)
-	//remoteProgressConn := remote //NewProgressConn(remote, chTxCount)
-
-	// Start remote -> local data transfer
-	go func() {
-		remoteToLocalTx, err := io.Copy(local, remote)
-		if err != nil {
-			log.Println(fmt.Sprintf("error while copy remote->local: %s", err))
-		}
-
-		fmt.Printf("Data remote -> local: %d \n", int64(remoteToLocalTx/(1024)))
-
-		chDone <- true
-	}()
-
-	// Start local -> remote data transfer
-	go func() {
-		localToRemoteTx, err := io.Copy(remote, local)
-		if err != nil {
-			log.Println(fmt.Sprintf("error while copy local->remote: %s", err))
-		}
-
-		fmt.Printf("Data local -> remote: %d \n", int64(localToRemoteTx/(1024)))
-
-		//fmt.Printf("-> %d\n", localProgressConn.count/(1024*1024))
-
-		chDone <- true
-	}()
-
-	<-chDone
-}
-
-func (this *Endpoint) DataPipe1(
-	stream grpctunnel_demo.EndpointService_DataPipeServer,
-) error {
-	current_count := atomic.AddInt32(&request_count, 1)
-	filename := "dst_data_at_" + strconv.Itoa(int(current_count)) + ".bin"
-
-	log.Println("Begin Rx: ", filename)
-
-	fo, err := os.Create(filename)
-	if err != nil {
-		panic(err)
-	}
-
-	defer fo.Close()
-
-	// make a write buffer
-	writer := bufio.NewWriter(fo)
-
-	for {
-		msg, err := stream.Recv()
-
-		if err == io.EOF {
-			//exitLoop = true
-			break
-		} else if err != nil {
-			panic(err)
-		}
-
-		// write a chunk
-		if _, err := writer.Write(msg.DataChunk); err != nil {
-			panic(err)
-		}
-	}
-
-	if err = writer.Flush(); err != nil {
-		panic(err)
-	}
-
-	log.Println("End Rx: ", filename)
-
-	return nil
 }
 
 func main() {
@@ -172,6 +83,25 @@ func main() {
 	channelServer := grpctunnel.NewReverseTunnelServer(tunnelStub)
 
 	grpctunnel_demo.RegisterEndpointServiceServer(channelServer, &Endpoint{})
+
+	// Open a tunnel and return a channel.
+	stream, err := tunnelStub.OpenTunnel(context.Background())
+
+	ch := grpctunnel.NewChannel(stream)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	forTunnelClient := grpctunnel_demo.NewHubServiceClient(ch)
+
+	go func() {
+		time.Sleep(10000)
+
+		forTunnelClient.CreateTcpListenerAndBlock(context.Background(), &grpctunnel_demo.TcpListenRequest{
+			Host: "localhost",
+			Port: "50071",
+		})
+	}()
 
 	// Open the reverse hub_and_spoke and serve requests.
 	if _, err := channelServer.Serve(context.Background()); err != nil {
